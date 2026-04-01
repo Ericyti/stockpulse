@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+lambda_package.zip
+
+# dbt
+dbt/stockpulse_dbt/target/
+dbt/stockpulse_dbt/dbt_packages/
+dbt/stockpulse_dbt/logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (NEVER commit these)
+*.env
+.env.*
+profiles.yml

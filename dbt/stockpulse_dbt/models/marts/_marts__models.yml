@@ -1,0 +1,62 @@
+# _marts__models.yml
+# ===================
+# Schema definitions and tests for mart models.
+# dbt uses this to validate data quality after every run.
+
+version: 2
+
+models:
+  - name: fct_daily_trading
+    description: "Fact table: one row per ticker per trading day with all indicators"
+    columns:
+      - name: ticker
+        description: "Stock ticker symbol"
+        tests:
+          - not_null
+      - name: trade_date
+        description: "Trading day"
+        tests:
+          - not_null
+      - name: close_price
+        description: "Closing price"
+        tests:
+          - not_null
+      - name: sector
+        description: "Industry sector from dim_stocks"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Technology', 'Financials', 'Healthcare', 'Energy', 'Consumer Staples']
+    tests:
+      - unique:
+          column_name: "ticker || '-' || trade_date"
+
+  - name: fct_sector_performance
+    description: "Sector-level daily aggregations"
+    columns:
+      - name: sector
+        tests:
+          - not_null
+      - name: trade_date
+        tests:
+          - not_null
+      - name: stock_count
+        tests:
+          - not_null
+    tests:
+      - unique:
+          column_name: "sector || '-' || trade_date"
+
+  - name: dim_stocks
+    description: "Stock dimension with company name and sector"
+    columns:
+      - name: ticker
+        tests:
+          - unique
+          - not_null
+      - name: company_name
+        tests:
+          - not_null
+      - name: sector
+        tests:
+          - not_null

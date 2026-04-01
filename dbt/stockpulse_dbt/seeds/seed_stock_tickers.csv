@@ -1,0 +1,11 @@
+ticker,company_name,sector,market_cap_category
+AAPL,Apple Inc,Technology,Large Cap
+MSFT,Microsoft Corporation,Technology,Large Cap
+GOOGL,Alphabet Inc,Technology,Large Cap
+JPM,JPMorgan Chase & Co,Financials,Large Cap
+BAC,Bank of America Corporation,Financials,Large Cap
+JNJ,Johnson & Johnson,Healthcare,Large Cap
+UNH,UnitedHealth Group Incorporated,Healthcare,Large Cap
+XOM,Exxon Mobil Corporation,Energy,Large Cap
+CVX,Chevron Corporation,Energy,Large Cap
+PG,Procter & Gamble Company,Consumer Staples,Large Cap

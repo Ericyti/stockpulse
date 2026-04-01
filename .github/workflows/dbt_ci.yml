@@ -1,0 +1,53 @@
+# .github/workflows/dbt_ci.yml
+# ==============================
+# Runs on every pull request to validate dbt models.
+#
+# WHAT IT DOES:
+#   1. Installs dbt-core and dbt-redshift
+#   2. Compiles all SQL models (catches syntax errors)
+#   3. Runs sqlfluff linter (catches style issues)
+#
+# NOTE: This does NOT run 'dbt run' or 'dbt test' because those
+# require a live Redshift connection. For full CI/CD, you'd add
+# a staging Redshift environment and run tests there.
+
+name: dbt CI
+
+on:
+  pull_request:
+    paths:
+      - 'dbt/**'
+
+jobs:
+  dbt-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install dbt-core dbt-redshift sqlfluff sqlfluff-templater-dbt
+
+      - name: Compile dbt models
+        working-directory: dbt/stockpulse_dbt
+        env:
+          # Use dummy values for CI — we're only compiling, not connecting
+          REDSHIFT_HOST: "localhost"
+          REDSHIFT_USER: "ci_user"
+          REDSHIFT_PASSWORD: "ci_password"
+        run: |
+          dbt compile --profiles-dir .
+
+      - name: Lint SQL with sqlfluff
+        working-directory: dbt/stockpulse_dbt
+        run: |
+          sqlfluff lint models/ --dialect redshift || true
+          # 'or true' so the workflow doesn't fail on lint warnings
+          # Remove '|| true' once you've fixed all lint issues

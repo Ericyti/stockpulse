@@ -1,0 +1,42 @@
+# dbt_project.yml
+# ================
+# This is the main configuration file for the dbt project.
+# It tells dbt where to find models, how to materialize them,
+# and which schema to write to.
+
+name: 'stockpulse_dbt'
+version: '1.0.0'
+
+profile: 'stockpulse'  # Must match a profile in profiles.yml
+
+# Where dbt looks for SQL model files
+model-paths: ["models"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+
+# How to materialize each folder of models
+# "view" = creates a SQL view (cheap, always fresh)
+# "table" = creates a physical table (faster queries, needs refresh)
+# "incremental" = appends only new rows (efficient for large tables)
+models:
+  stockpulse_dbt:
+    staging:
+      +materialized: view          # Staging models are lightweight views
+      +schema: analytics           # Created in the 'analytics' schema
+    intermediate:
+      +materialized: table         # Intermediate models are physical tables
+      +schema: analytics
+    marts:
+      +materialized: table         # Mart models are physical tables (Power BI reads these)
+      +schema: analytics
+
+# Seed configuration
+seeds:
+  stockpulse_dbt:
+    +schema: analytics
+
+# Clean up
+clean-targets:
+  - "target"
+  - "dbt_packages"

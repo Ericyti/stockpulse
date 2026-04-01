@@ -1,0 +1,75 @@
+# _staging__sources.yml
+# =====================
+# This YAML file tells dbt about the raw tables that already exist in Redshift.
+# These are the tables we loaded from S3 via COPY command.
+#
+# WHY SOURCES?
+#   - dbt can test raw data quality before transforming it
+#   - dbt generates lineage: you can see exactly where data comes from
+#   - If the source schema changes, dbt warns you immediately
+
+version: 2
+
+sources:
+  - name: raw_stockpulse
+    description: "Raw stock data loaded from S3 silver layer via COPY command"
+    database: stockpulse
+    schema: raw
+
+    tables:
+      - name: stock_prices
+        description: "Daily OHLCV stock prices from Alpha Vantage, cleaned by Glue"
+        columns:
+          - name: ticker
+            description: "Stock ticker symbol (e.g., AAPL, MSFT)"
+            tests:
+              - not_null
+
+          - name: trade_date
+            description: "Trading day date"
+            tests:
+              - not_null
+
+          - name: open_price
+            description: "Opening price for the trading day"
+            tests:
+              - not_null
+
+          - name: high_price
+            description: "Highest price during the trading day"
+
+          - name: low_price
+            description: "Lowest price during the trading day"
+
+          - name: close_price
+            description: "Closing price for the trading day"
+            tests:
+              - not_null
+
+          - name: volume
+            description: "Number of shares traded"
+
+          - name: source
+            description: "Data source identifier (alpha_vantage)"
+
+          - name: ingested_at
+            description: "Timestamp when Lambda pulled the data"
+
+          - name: processed_at
+            description: "Timestamp when Glue processed the data"
+
+        # Table-level tests
+        tests:
+          - unique:
+              column_name: "ticker || '-' || trade_date"
+
+    # Freshness check: alert if raw data is older than expected
+    # This catches pipeline failures early
+    loaded_at_field: processed_at
+    freshness:
+      warn_after:
+        count: 24
+        period: hour
+      error_after:
+        count: 48
+        period: hour
