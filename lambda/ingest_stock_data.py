@@ -63,7 +63,7 @@ def get_api_key() -> str:
     # In production, retrieve from Secrets Manager
     try:
         response = secrets_client.get_secret_value(
-            SecretId="stockpulse/alpha-vantage-api-key"
+            SecretId="stockpulse/alpha-vantage-api-key-v2"
         )
         secret = json.loads(response["SecretString"])
         return secret["api_key"]
