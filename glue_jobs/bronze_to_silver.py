@@ -1,35 +1,15 @@
 """
-StockPulse — Glue PySpark Job: Bronze -> Silver
-================================================
-This is the batch ETL step. It reads raw JSON from the bronze layer,
-cleans and normalizes the data, and writes Parquet to the silver layer.
+StockPulse — Glue PySpark Job: Bronze -> Silver (Fixed)
+========================================================
+Reads raw JSON from bronze, cleans it, writes Parquet to silver.
 
-WHY PYSPARK FOR THIS STEP?
-    The Alpha Vantage JSON is deeply nested and has string-typed numbers.
-    PySpark is excellent for:
-    - Flattening nested JSON (explode, struct access)
-    - Type-casting strings to floats/dates at scale
-    - Writing partitioned Parquet files efficiently
-    SQL would be painful for this — try writing a SQL query to flatten
-    a JSON map with dynamic keys. PySpark makes it straightforward.
-
-WHY NOT DBT FOR THIS STEP?
-    dbt operates on data already in a warehouse (Redshift). This step
-    processes files on S3 — there's no SQL engine involved yet.
-
-INPUT:
-    s3://bucket/bronze/stocks/year=YYYY/month=MM/day=DD/*.json
-
-OUTPUT:
-    s3://bucket/silver/stocks/ticker=AAPL/*.parquet
-    s3://bucket/silver/stocks/ticker=MSFT/*.parquet
-    ...
-
-SCHEDULING:
-    Triggered by Airflow after Lambda ingestion completes.
-    Runs as a Glue job with 2 DPUs (the minimum — keeps costs low).
+FIX: Alpha Vantage JSON has dynamic date keys in "Time Series (Daily)".
+Spark infers these as a struct (one field per date) instead of a map.
+Solution: Read JSON as raw text, parse with Python's json module,
+and build rows manually.
 """
 
+import json
 import sys
 from datetime import datetime
 
@@ -37,20 +17,23 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
-from pyspark.sql import DataFrame
+from pyspark.sql import Row
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, LongType
+from pyspark.sql.types import (
+    DoubleType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 # ---------------------------------------------------------------------------
-# Glue Job Boilerplate
+# Glue Job Setup
 # ---------------------------------------------------------------------------
-# Every Glue job needs this setup. getResolvedOptions reads command-line
-# arguments that Airflow passes when triggering the job.
-
 args = getResolvedOptions(sys.argv, [
     "JOB_NAME",
     "S3_BUCKET",
-    "PROCESSING_DATE",  # Format: YYYY-MM-DD
+    "PROCESSING_DATE",
 ])
 
 sc = SparkContext()
@@ -59,9 +42,6 @@ spark = glue_context.spark_session
 job = Job(glue_context)
 job.init(args["JOB_NAME"], args)
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
 S3_BUCKET = args["S3_BUCKET"]
 PROCESSING_DATE = args["PROCESSING_DATE"]
 
@@ -77,175 +57,127 @@ SILVER_PATH = f"s3://{S3_BUCKET}/silver/stocks/"
 print(f"Reading from:  {BRONZE_PATH}")
 print(f"Writing to:    {SILVER_PATH}")
 
+# ---------------------------------------------------------------------------
+# Define the output schema
+# ---------------------------------------------------------------------------
+silver_schema = StructType([
+    StructField("ticker", StringType(), False),
+    StructField("trade_date", StringType(), False),
+    StructField("open_price", DoubleType(), True),
+    StructField("high_price", DoubleType(), True),
+    StructField("low_price", DoubleType(), True),
+    StructField("close_price", DoubleType(), True),
+    StructField("volume", LongType(), True),
+    StructField("source", StringType(), True),
+    StructField("ingested_at", StringType(), True),
+    StructField("processed_at", StringType(), True),
+])
 
 # ---------------------------------------------------------------------------
-# Step 1: Read raw JSON
+# Read JSON as raw text and parse manually
 # ---------------------------------------------------------------------------
-def read_bronze_data(path: str) -> DataFrame:
-    """Read all JSON files from today's bronze partition."""
-    print("Reading bronze layer...")
+print("Reading bronze layer as raw text...")
 
-    # multiline=true because each file is a single JSON object, not JSONL
-    raw_df = spark.read.option("multiline", "true").json(path)
+raw_text_df = spark.read.text(BRONZE_PATH, wholetext=True)
+print(f"Found {raw_text_df.count()} raw files")
 
-    print("Bronze schema:")
-    raw_df.printSchema()
-    print(f"Found {raw_df.count()} raw files")
+raw_texts = raw_text_df.collect()
 
-    return raw_df
+all_rows = []
+parse_errors = 0
 
+for text_row in raw_texts:
+    try:
+        data = json.loads(text_row["value"])
 
-# ---------------------------------------------------------------------------
-# Step 2: Flatten and transform
-# ---------------------------------------------------------------------------
-def transform_to_silver(raw_df: DataFrame) -> DataFrame:
-    """
-    Flatten the nested Alpha Vantage JSON into a clean tabular format.
+        metadata = data.get("metadata", {})
+        ticker = metadata.get("ticker", "UNKNOWN")
+        source = metadata.get("source", "alpha_vantage")
+        ingestion_timestamp = metadata.get("ingestion_timestamp", "")
 
-    THE KEY PYSPARK CONCEPT HERE: explode()
-    ----------------------------------------
-    The "Time Series (Daily)" field is a MAP — each key is a date string,
-    each value is a struct with OHLCV prices. We use explode() to turn
-    each key-value pair into its own row:
+        raw_data = data.get("raw_data", {})
+        time_series = raw_data.get("Time Series (Daily)", {})
 
-    BEFORE explode:
-        ticker  |  time_series
-        AAPL    |  {"2025-06-15": {...}, "2025-06-14": {...}, ...}
+        if not time_series:
+            print(f"  Warning: No time series data for {ticker}")
+            continue
 
-    AFTER explode:
-        ticker  |  trade_date_str  |  daily_data
-        AAPL    |  2025-06-15      |  {open: "229", high: "231", ...}
-        AAPL    |  2025-06-14      |  {open: "228", high: "230", ...}
+        for date_str, ohlcv in time_series.items():
+            try:
+                row = Row(
+                    ticker=ticker.upper().strip(),
+                    trade_date=date_str,
+                    open_price=float(ohlcv.get("1. open", 0)),
+                    high_price=float(ohlcv.get("2. high", 0)),
+                    low_price=float(ohlcv.get("3. low", 0)),
+                    close_price=float(ohlcv.get("4. close", 0)),
+                    volume=int(ohlcv.get("5. volume", 0)),
+                    source=source,
+                    ingested_at=ingestion_timestamp,
+                    processed_at=datetime.utcnow().isoformat(),
+                )
+                all_rows.append(row)
+            except (ValueError, TypeError):
+                parse_errors += 1
+                continue
 
-    Then we extract each field from the struct and cast types.
-    """
-    print("Transforming bronze -> silver...")
+    except json.JSONDecodeError as e:
+        parse_errors += 1
+        print(f"  Error parsing JSON: {e}")
+        continue
 
-    # Step 2a: Pull out the ticker from metadata and the time series data
-    df_with_ticker = raw_df.select(
-        F.col("metadata.ticker").alias("ticker"),
-        F.col("metadata.ingestion_timestamp").alias("ingestion_timestamp"),
-        F.col("metadata.source").alias("source"),
-        F.col("raw_data.`Time Series (Daily)`").alias("time_series"),
-    )
-
-    # Step 2b: Explode the map into rows
-    # Each (date_string, ohlcv_struct) pair becomes its own row
-    exploded_df = df_with_ticker.select(
-        "ticker",
-        "ingestion_timestamp",
-        "source",
-        F.explode(F.col("time_series")).alias("trade_date_str", "daily_data"),
-    )
-
-    # Step 2c: Extract and cast fields
-    # Alpha Vantage returns everything as strings ("229.00"), so we cast
-    # to proper numeric types for downstream analytics
-    silver_df = exploded_df.select(
-        F.col("ticker"),
-        F.to_date(F.col("trade_date_str"), "yyyy-MM-dd").alias("trade_date"),
-        F.col("daily_data.`1. open`").cast(DoubleType()).alias("open_price"),
-        F.col("daily_data.`2. high`").cast(DoubleType()).alias("high_price"),
-        F.col("daily_data.`3. low`").cast(DoubleType()).alias("low_price"),
-        F.col("daily_data.`4. close`").cast(DoubleType()).alias("close_price"),
-        F.col("daily_data.`5. volume`").cast(LongType()).alias("volume"),
-        F.col("source"),
-        F.to_timestamp(F.col("ingestion_timestamp")).alias("ingested_at"),
-        F.current_timestamp().alias("processed_at"),
-    )
-
-    return silver_df
-
+print(f"Parsed {len(all_rows)} rows ({parse_errors} errors)")
 
 # ---------------------------------------------------------------------------
-# Step 3: Data quality checks
+# Create DataFrame and apply quality checks
 # ---------------------------------------------------------------------------
-def apply_quality_checks(df: DataFrame) -> DataFrame:
-    """
-    Remove bad data before writing to silver.
-
-    Quality rules:
-    - No null trade dates or closing prices (critical fields)
-    - No negative or zero prices (data corruption indicator)
-    - Deduplicate: if the same ticker+date appears twice, keep one
-    """
-    print("Running quality checks...")
-
-    initial_count = df.count()
-
-    # Remove nulls in critical columns
-    cleaned_df = df.filter(
-        F.col("trade_date").isNotNull()
-        & F.col("close_price").isNotNull()
-        & F.col("ticker").isNotNull()
-    )
-
-    # Remove impossible values
-    cleaned_df = cleaned_df.filter(
-        (F.col("open_price") > 0)
-        & (F.col("high_price") > 0)
-        & (F.col("low_price") > 0)
-        & (F.col("close_price") > 0)
-        & (F.col("volume") >= 0)
-    )
-
-    # Deduplicate on (ticker, trade_date)
-    cleaned_df = cleaned_df.dropDuplicates(["ticker", "trade_date"])
-
-    final_count = cleaned_df.count()
-    print(f"Quality check: {initial_count} -> {final_count} ({initial_count - final_count} dropped)")
-
-    return cleaned_df
-
-
-# ---------------------------------------------------------------------------
-# Step 4: Write to silver layer as Parquet
-# ---------------------------------------------------------------------------
-def write_silver_data(df: DataFrame, path: str):
-    """
-    Write cleaned data to silver layer.
-
-    WHY PARQUET?
-        Parquet is a columnar storage format. Benefits:
-        - 10-50x smaller than JSON (columnar compression)
-        - Schema embedded in the file (self-describing)
-        - Athena, Glue, and Redshift read it natively
-        - Column pruning: queries that only need 'close_price' skip
-          all other columns entirely
-
-    WHY PARTITION BY TICKER?
-        When you query "WHERE ticker = 'AAPL'", Spark/Athena only reads
-        files in the ticker=AAPL/ folder. With 10 tickers, that means
-        reading 1/10th of the data.
-    """
-    print(f"Writing silver data to {path}...")
-
-    df.write \
-        .mode("append") \
-        .partitionBy("ticker") \
-        .parquet(path)
-
-    print("Silver layer write complete")
-
-
-# ---------------------------------------------------------------------------
-# Main execution
-# ---------------------------------------------------------------------------
-try:
-    raw_df = read_bronze_data(BRONZE_PATH)
-    silver_df = transform_to_silver(raw_df)
-    clean_df = apply_quality_checks(silver_df)
-
-    # Show a sample for verification in CloudWatch logs
-    print("\nSample silver records:")
-    clean_df.show(5, truncate=False)
-
-    write_silver_data(clean_df, SILVER_PATH)
-    print(f"\nBronze -> Silver complete for {PROCESSING_DATE}")
-
-except Exception as e:
-    print(f"Job failed: {e}")
-    raise
-
-finally:
+if len(all_rows) == 0:
+    print("No rows parsed - exiting")
     job.commit()
+    sys.exit(0)
+
+silver_df = spark.createDataFrame(all_rows, schema=silver_schema)
+
+silver_df = silver_df.withColumn(
+    "trade_date", F.to_date(F.col("trade_date"), "yyyy-MM-dd")
+)
+silver_df = silver_df.withColumn(
+    "ingested_at", F.to_timestamp(F.col("ingested_at"))
+)
+silver_df = silver_df.withColumn(
+    "processed_at", F.to_timestamp(F.col("processed_at"))
+)
+
+initial_count = silver_df.count()
+
+silver_df = silver_df.filter(
+    (F.col("trade_date").isNotNull())
+    & (F.col("close_price").isNotNull())
+    & (F.col("close_price") > 0)
+    & (F.col("open_price") > 0)
+    & (F.col("high_price") > 0)
+    & (F.col("low_price") > 0)
+    & (F.col("volume") >= 0)
+)
+
+silver_df = silver_df.dropDuplicates(["ticker", "trade_date"])
+
+final_count = silver_df.count()
+print(f"Quality check: {initial_count} -> {final_count} ({initial_count - final_count} dropped)")
+
+print("\nSample silver records:")
+silver_df.show(5, truncate=False)
+
+# ---------------------------------------------------------------------------
+# Write to silver layer as Parquet
+# ---------------------------------------------------------------------------
+print(f"Writing {final_count} rows to {SILVER_PATH}...")
+
+silver_df.write \
+    .mode("overwrite") \
+    .partitionBy("ticker") \
+    .parquet(SILVER_PATH)
+
+print(f"Bronze -> Silver complete for {PROCESSING_DATE}")
+
+job.commit()
