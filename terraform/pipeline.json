@@ -1,0 +1,50 @@
+{
+  "Comment": "StockPulse daily batch pipeline",
+  "StartAt": "IngestStockData",
+  "States": {
+    "IngestStockData": {
+      "Type": "Task",
+      "Resource": "${ingest_lambda_arn}",
+      "ResultPath": "$.ingestResult",
+      "TimeoutSeconds": 300,
+      "Next": "RunGlueETL"
+    },
+    "RunGlueETL": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${glue_job_name}",
+        "Arguments": {
+          "--S3_BUCKET": "${s3_bucket}",
+          "--PROCESSING_DATE.$": "$$.Execution.Input.processing_date"
+        }
+      },
+      "ResultPath": "$.glueResult",
+      "TimeoutSeconds": 600,
+      "Next": "LoadToRedshift"
+    },
+    "LoadToRedshift": {
+      "Type": "Task",
+      "Resource": "${loader_lambda_arn}",
+      "Parameters": {
+        "action": "copy"
+      },
+      "ResultPath": "$.copyResult",
+      "TimeoutSeconds": 120,
+      "Next": "RunTransforms"
+    },
+    "RunTransforms": {
+      "Type": "Task",
+      "Resource": "${loader_lambda_arn}",
+      "Parameters": {
+        "action": "transform"
+      },
+      "ResultPath": "$.transformResult",
+      "TimeoutSeconds": 300,
+      "Next": "PipelineComplete"
+    },
+    "PipelineComplete": {
+      "Type": "Succeed"
+    }
+  }
+}
