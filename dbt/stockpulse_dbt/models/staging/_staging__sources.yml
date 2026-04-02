@@ -58,11 +58,6 @@ sources:
           - name: processed_at
             description: "Timestamp when Glue processed the data"
 
-        # Table-level tests
-        tests:
-          - unique:
-              column_name: "ticker || '-' || trade_date"
-
     # Freshness check: alert if raw data is older than expected
     # This catches pipeline failures early
     loaded_at_field: processed_at

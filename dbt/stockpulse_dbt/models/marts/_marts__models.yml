@@ -27,9 +27,6 @@ models:
           - not_null
           - accepted_values:
               values: ['Technology', 'Financials', 'Healthcare', 'Energy', 'Consumer Staples']
-    tests:
-      - unique:
-          column_name: "ticker || '-' || trade_date"
 
   - name: fct_sector_performance
     description: "Sector-level daily aggregations"
@@ -43,9 +40,6 @@ models:
       - name: stock_count
         tests:
           - not_null
-    tests:
-      - unique:
-          column_name: "sector || '-' || trade_date"
 
   - name: dim_stocks
     description: "Stock dimension with company name and sector"

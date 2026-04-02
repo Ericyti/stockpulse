@@ -175,7 +175,6 @@ print(f"Writing {final_count} rows to {SILVER_PATH}...")
 
 silver_df.write \
     .mode("overwrite") \
-    .partitionBy("ticker") \
     .parquet(SILVER_PATH)
 
 print(f"Bronze -> Silver complete for {PROCESSING_DATE}")
